@@ -58,18 +58,11 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
 	/* tmp1 = TEMP = E_K(RAND XOR OP_C) */
 	for i := 0; i < 16; i++ {
 		rijndaelInput[i] = _rand[i] ^ opc[i]
-
-		// RijndaelEncrypt( OP, op_c );
-		if aes128EncryptBlock(k, rijndaelInput, tmp1) != 0 {
-			return -1
-		}
 	}
-	/*
-		for (i = 0; i < 16; i++)
-		tmp1[i] = _rand[i] ^ opc[i];
-		if (aes_128_encrypt_block(k, tmp1, tmp1))
-		return -1;
-	*/
+	// RijndaelEncrypt( OP, op_c );
+	if aes128EncryptBlock(k, rijndaelInput, tmp1) != 0 {
+		return -1
+	}
 
 	// fmt.Printf("tmp1: %x\n", tmp1)
 
@@ -89,31 +82,26 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
 	for i := 0; i < 16; i++ {
 		tmp3[(i+8)%16] = tmp2[i] ^ opc[i]
 	}
-	/*
-		for (i = 0; i < 16; i++)
-			tmp3[(i + 8) % 16] = tmp2[i] ^ opc[i];
-	*/
+
+	// fmt.Printf("tmp3: %x\n", tmp3)
 
 	/* XOR with TEMP = E_K(RAND XOR OP_C) */
 	for i := 0; i < 16; i++ {
 		tmp3[i] ^= tmp1[i]
 	}
-	/*
-		for (i = 0; i < 16; i++)
-			tmp3[i] ^= tmp1[i];
-	*/
+	// fmt.Printf("tmp3 XOR with TEMP: %x\n", tmp3)
 
 	/* XOR with c1 (= ..00, i.e., NOP) */
-
 	/* f1 || f1* = E_K(tmp3) XOR OP_c */
 	if aes128EncryptBlock(k, tmp3, tmp1) != 0 {
 		return -1
 	}
+	// fmt.Printf("XOR with c1 (: %x\n", tmp1)
 
 	for i := 0; i < 16; i++ {
 		tmp1[i] ^= opc[i]
 	}
-
+	// fmt.Printf("tmp1[i] ^= opc[i] %x\n", tmp1)
 	if mac_a != nil {
 		copy(mac_a[0:], tmp1[0:8])
 	}
@@ -121,16 +109,6 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
 	if mac_s != nil {
 		copy(mac_s[0:], tmp1[8:16])
 	}
-	/*
-		if (aes_128_encrypt_block(k, tmp3, tmp1))
-		return -1;
-		for (i = 0; i < 16; i++)
-		tmp1[i] ^= opc[i];
-		if (mac_a)
-		os_memcpy(mac_a, tmp1, 8); // f1
-		if (mac_s)
-		os_memcpy(mac_s, tmp1 + 8, 8);  //f1
-	*/
 
 	return 0
 }

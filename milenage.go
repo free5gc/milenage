@@ -1,41 +1,11 @@
 package milenage
 
 import (
+	"crypto/aes"
 	"fmt"
-	"free5gc/lib/aes"
 	"reflect"
 	"strconv"
 )
-
-func rtLength(keybits int) int {
-	return (keybits)/8 + 28
-}
-
-func aes128EncryptBlock(key, in, out []uint8) int {
-	const keyBits int = 128
-
-	rk := make([]uint32, rtLength(128))
-	var nrounds = aes.AesSetupEnc(rk, key, keyBits)
-	//fmt.Printf("nrounds: %d\n", nrounds)
-
-	aes.AesEncrypt(rk, nrounds, in, out)
-	return 0
-
-}
-
-/*
-int aes_128_encrypt_block(const c_uint8_t *key,
-const c_uint8_t *in, c_uint8_t *out)
-{
-const int key_bits = 128;
-unsigned int rk[RKLENGTH(128)];
-int nrounds;
-
-nrounds = aes_setup_enc(rk, key, key_bits);
-aes_encrypt(rk, nrounds, in, out);
-
-return 0;
-}*/
 
 /**
  * milenage_f1 - Milenage f1 and f1* algorithms
@@ -48,9 +18,9 @@ return 0;
  * @mac_s: Buffer for MAC-S = 64-bit resync authentication code, or %NULL
  * Returns: 0 on success, -1 on failure
  */
-func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
+func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) error {
 
-	tmp1, tmp2, tmp3 := make([]uint8, 16), make([]uint8, 16), make([]uint8, 16)
+	tmp2, tmp3 := make([]uint8, 16), make([]uint8, 16)
 	// var tmp1, tmp2, tmp3 [16]uint8
 
 	rijndaelInput := make([]uint8, 16)
@@ -60,9 +30,14 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
 		rijndaelInput[i] = _rand[i] ^ opc[i]
 	}
 	// RijndaelEncrypt( OP, op_c );
-	if aes128EncryptBlock(k, rijndaelInput, tmp1) != 0 {
-		return -1
+
+	block, err := aes.NewCipher(k)
+	if err != nil {
+		return err
 	}
+
+	tmp1 := make([]byte, block.BlockSize())
+	block.Encrypt(tmp1, rijndaelInput)
 
 	// fmt.Printf("tmp1: %x\n", tmp1)
 
@@ -93,9 +68,10 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
 
 	/* XOR with c1 (= ..00, i.e., NOP) */
 	/* f1 || f1* = E_K(tmp3) XOR OP_c */
-	if aes128EncryptBlock(k, tmp3, tmp1) != 0 {
-		return -1
-	}
+
+	tmp1 = make([]byte, block.BlockSize())
+	block.Encrypt(tmp1, tmp3)
+
 	// fmt.Printf("XOR with c1 (: %x\n", tmp1)
 
 	for i := 0; i < 16; i++ {
@@ -110,7 +86,7 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
 		copy(mac_s[0:], tmp1[8:16])
 	}
 
-	return 0
+	return nil
 }
 
 /**
@@ -125,24 +101,21 @@ func milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
  * @akstar: Buffer for AK = 48-bit anonymity key (f5*), or %NULL
  * Returns: 0 on success, -1 on failure
  */
-func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
-	tmp1, tmp2, tmp3 := make([]uint8, 16), make([]uint8, 16), make([]uint8, 16)
-	//c_uint8_t tmp1[16], tmp2[16], tmp3[16];
+func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) error {
+	tmp1 := make([]uint8, 16)
 
 	/* tmp2 = TEMP = E_K(RAND XOR OP_C) */
 	for i := 0; i < 16; i++ {
 		tmp1[i] = _rand[i] ^ opc[i]
 	}
 
-	if aes128EncryptBlock(k, tmp1, tmp2) != 0 {
-		return -1
+	block, err := aes.NewCipher(k)
+	if err != nil {
+		return err
 	}
-	/*
-		for (i = 0; i < 16; i++)
-			tmp1[i] = _rand[i] ^ opc[i];
-		if (aes_128_encrypt_block(k, tmp1, tmp2))
-		return -1;
-	*/
+
+	tmp2 := make([]byte, block.BlockSize())
+	block.Encrypt(tmp2, tmp1)
 
 	/* OUT2 = E_K(rot(TEMP XOR OP_C, r2) XOR c2) XOR OP_C */
 	/* OUT3 = E_K(rot(TEMP XOR OP_C, r3) XOR c3) XOR OP_C */
@@ -162,9 +135,8 @@ func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
 	*/
 
 	/* f5 || f2 = E_K(tmp1) XOR OP_c */
-	if aes128EncryptBlock(k, tmp1, tmp3) != 0 {
-		return -1
-	}
+	tmp3 := make([]byte, block.BlockSize())
+	block.Encrypt(tmp3, tmp1)
 
 	for i := 0; i < 16; i++ {
 		tmp3[i] ^= opc[i]
@@ -196,9 +168,7 @@ func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
 		}
 		tmp1[15] ^= 2 // XOR c3 (= ..02)
 
-		if aes128EncryptBlock(k, tmp1, ck) != 0 {
-			return -1
-		}
+		block.Encrypt(ck, tmp1)
 
 		for i := 0; i < 16; i++ {
 			ck[i] ^= opc[i]
@@ -225,9 +195,7 @@ func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
 		}
 		tmp1[15] ^= 4 // XOR c4 (= ..04)
 
-		if aes128EncryptBlock(k, tmp1, ik) != 0 {
-			return -1
-		}
+		block.Encrypt(ik, tmp1)
 
 		for i := 0; i < 16; i++ {
 			ik[i] ^= opc[i]
@@ -254,9 +222,7 @@ func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
 		}
 		tmp1[15] ^= 8 // XOR c5 (= ..08)
 
-		if aes128EncryptBlock(k, tmp1, tmp1) != 0 {
-			return -1
-		}
+		block.Encrypt(tmp1, tmp1)
 
 		for i := 0; i < 6; i++ {
 			akstar[i] = tmp1[i] ^ opc[i]
@@ -275,7 +241,7 @@ func milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
 		}
 	*/
 
-	return 0
+	return nil
 }
 
 func MilenageGenerate(opc, amf, k, sqn, _rand, autn, ik, ck, ak, res []uint8, res_len *uint) {
@@ -290,7 +256,8 @@ func MilenageGenerate(opc, amf, k, sqn, _rand, autn, ik, ck, ak, res []uint8, re
 		return
 	}
 
-	if milenageF1(opc, k, _rand, sqn, amf, mac_a, nil) != 0 || milenageF2345(opc, k, _rand, res, ck, ik, ak, nil) != 0 {
+	if milenageF1(opc, k, _rand, sqn, amf, mac_a, nil) != nil ||
+		milenageF2345(opc, k, _rand, res, ck, ik, ak, nil) != nil {
 		*res_len = 0
 		return
 	}
@@ -320,7 +287,8 @@ func MilenageGenerate(opc, amf, k, sqn, _rand, autn, ik, ck, ak, res []uint8, re
  * @sqn: Buffer for SQN = 48-bit sequence number
  * Returns: 0 = success (sqn filled), -1 on failure
  */
-//int milenage_auts(const c_uint8_t *opc, const c_uint8_t *k, const c_uint8_t *_rand, const c_uint8_t *auts, c_uint8_t *sqn)
+//int milenage_auts(const c_uint8_t *opc, const c_uint8_t *k, const c_uint8_t *_rand,
+//    const c_uint8_t *auts, c_uint8_t *sqn)
 func Milenage_auts(opc, k, _rand, auts, sqn []uint8) int {
 	amf := []uint8{0x00, 0x00} // TS 33.102 v7.0.0, 6.3.3
 	ak := make([]uint8, 6)
@@ -331,7 +299,7 @@ func Milenage_auts(opc, k, _rand, auts, sqn []uint8) int {
 	   int i;
 	*/
 
-	if milenageF2345(opc, k, _rand, nil, nil, nil, nil, ak) != 0 {
+	if milenageF2345(opc, k, _rand, nil, nil, nil, nil, ak) != nil {
 		return -1
 	}
 
@@ -339,7 +307,7 @@ func Milenage_auts(opc, k, _rand, auts, sqn []uint8) int {
 		sqn[i] = auts[i] ^ ak[i]
 	}
 
-	if milenageF1(opc, k, _rand, sqn, amf, nil, mac_s) != 0 || !reflect.DeepEqual(mac_s, auts[6:14]) {
+	if milenageF1(opc, k, _rand, sqn, amf, nil, mac_s) != nil || !reflect.DeepEqual(mac_s, auts[6:14]) {
 		return -1
 	}
 
@@ -367,7 +335,7 @@ func Milenage_auts(opc, k, _rand, auts, sqn []uint8) int {
 func Gsm_milenage(opc, k, _rand, sres, kc []uint8) int {
 	res, ck, ik := make([]uint8, 8), make([]uint8, 16), make([]uint8, 16)
 
-	if milenageF2345(opc, k, _rand, res, ck, ik, nil, nil) != 0 {
+	if milenageF2345(opc, k, _rand, res, ck, ik, nil, nil) != nil {
 		return -1
 	}
 	/*
@@ -427,7 +395,7 @@ func Milenage_check(opc, k, sqn, _rand, autn, ik, ck, res []uint8, res_len *uint
 	d_trace(1, "Milenage: RAND\n"); d_trace_hex(1, _rand, 16);
 	*/
 
-	if milenageF2345(opc, k, _rand, res, ck, ik, ak, nil) != 0 {
+	if milenageF2345(opc, k, _rand, res, ck, ik, ak, nil) != nil {
 		return -1
 	}
 	/*
@@ -457,7 +425,7 @@ func Milenage_check(opc, k, sqn, _rand, autn, ik, ck, res []uint8, res_len *uint
 	if os_memcmp(rx_sqn, sqn, 6) <= 0 {
 		auts_amf := []uint8{0x00, 0x00} // TS 33.102 v7.0.0, 6.3.3
 
-		if milenageF2345(opc, k, _rand, nil, nil, nil, nil, ak) != 0 {
+		if milenageF2345(opc, k, _rand, nil, nil, nil, nil, ak) != nil {
 			return -1
 		}
 
@@ -467,7 +435,7 @@ func Milenage_check(opc, k, sqn, _rand, autn, ik, ck, res []uint8, res_len *uint
 			auts[i] = sqn[i] ^ ak[i]
 		}
 
-		if milenageF1(opc, k, _rand, sqn, auts_amf, nil, auts[6:]) != 0 {
+		if milenageF1(opc, k, _rand, sqn, auts_amf, nil, auts[6:]) != nil {
 			return -1
 		}
 
@@ -496,7 +464,7 @@ func Milenage_check(opc, k, sqn, _rand, autn, ik, ck, res []uint8, res_len *uint
 	amf = autn[6:]
 	//TODO d_trace(1, "Milenage: AMF\n"); d_trace_hex(1, amf, 2);
 
-	if milenageF1(opc, k, _rand, rx_sqn, amf, mac_a, nil) != 0 {
+	if milenageF1(opc, k, _rand, rx_sqn, amf, mac_a, nil) != nil {
 		return -1
 	}
 	//TODO d_trace(1, "Milenage: MAC_A\n"); d_trace_hex(1, mac_a, 8);
@@ -525,16 +493,6 @@ func Milenage_check(opc, k, sqn, _rand, autn, ik, ck, res []uint8, res_len *uint
 	return 0
 }
 
-func milenage_opc(k, op, opc []uint8) {
-
-	// RijndaelEncrypt( OP, op_c );
-	aes128EncryptBlock(k, op, opc)
-
-	for i := 0; i < 16; i++ {
-		opc[i] ^= op[i]
-	}
-}
-
 // implementation of os_memcmp
 func os_memcmp(a, b []uint8, num int) int {
 	for i := 0; i < num; i++ {
@@ -550,22 +508,36 @@ func os_memcmp(a, b []uint8, num int) int {
 	return 0
 }
 
-func F1_Test(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) int {
+func F1(opc, k, _rand, sqn, amf, mac_a, mac_s []uint8) error {
 
-	res := milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s)
+	error := milenageF1(opc, k, _rand, sqn, amf, mac_a, mac_s)
 
-	return res
+	return error
 }
 
-func F2345_Test(opc, k, _rand, res, ck, ik, ak, akstar []uint8) int {
+func F2345(opc, k, _rand, res, ck, ik, ak, akstar []uint8) error {
 
-	flag := milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar)
+	err := milenageF2345(opc, k, _rand, res, ck, ik, ak, akstar)
 
-	return flag
+	return err
 }
 
-func GenerateOPC(k, op, opc []uint8) {
-	milenage_opc(k, op, opc)
+func GenerateOPC(k, op []uint8) ([]uint8, error) {
+
+	block, err := aes.NewCipher(k)
+	if err != nil {
+		return nil, err
+	}
+
+	opc := make([]byte, block.BlockSize())
+
+	block.Encrypt(opc, op)
+
+	for i := 0; i < 16; i++ {
+		opc[i] ^= op[i]
+	}
+
+	return opc, nil
 }
 
 func InsertData(op, k, _rand, sqn, amf []uint8, OP, K, RAND, SQN, AMF string) {
